@@ -1,0 +1,242 @@
+diff --git a/src/router.mjs b/src/router.mjs
+index 4721487..39afcaf 100644
+--- a/src/router.mjs
++++ b/src/router.mjs
+@@ -489,2 +489,3 @@ const agentPayloadCache = new Map();
+ const agentPayloadCacheInFlight = new Map();
++const nativeAgentRelayModelsByAccount = new Map();
+ const agentPayloadRelayFailures = new Map();
+@@ -1580,5 +1581,6 @@ function normalizeRoutedInput(input) {
+ 
+-function nativeAgentRelayModel() {
++function nativeAgentRelayCandidates() {
+   const configured = String(process.env.MODEL_ROUTER_AGENT_RELAY_MODEL || "").trim();
+-  if (configured) return configured;
++  if (configured) return [configured];
++  const preferred = ["gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5"];
+   try {
+@@ -1586,10 +1588,19 @@ function nativeAgentRelayModel() {
+     const models = Array.isArray(parsed?.models) ? parsed.models : [];
+-    const preferred = models.find((model) => model?.slug === "gpt-5.6-sol");
+-    const listed = models.find(
+-      (model) => typeof model?.slug === "string" && model.visibility === "list",
+-    );
+-    const available = models.find((model) => typeof model?.slug === "string");
+-    return preferred?.slug || listed?.slug || available?.slug || "gpt-5.6-sol";
++    const listed = models
++      .filter((model) => typeof model?.slug === "string" && model.visibility === "list")
++      .map((model) => model.slug);
++    return [...new Set([...preferred, ...listed])].slice(0, 8);
++  } catch {
++    return preferred;
++  }
++}
++
++function nativeRelayModelUnsupported(bytes, model) {
++  try {
++    const response = JSON.parse(bytes.toString("utf8"));
++    const message = response?.error?.message ?? response?.detail;
++    return message ===
++      `The '${model}' model is not supported when using Codex with a ChatGPT account.`;
+   } catch {
+-    return "gpt-5.6-sol";
++    return false;
+   }
+@@ -1851,2 +1862,3 @@ async function relayEncryptedAgentPayloadOnce(
+   cacheKey,
++  accountScope,
+   headers,
+@@ -1855,3 +1867,3 @@ async function relayEncryptedAgentPayloadOnce(
+   const body = {
+-    model: nativeAgentRelayModel(),
++    model: "",
+     stream: true,
+@@ -1879,12 +1891,28 @@ async function relayEncryptedAgentPayloadOnce(
+   };
+-  const upstream = await fetch(nativeTarget("/responses", ""), {
+-    method: "POST",
+-    headers: { ...headers, Accept: "text/event-stream" },
+-    body: JSON.stringify(body),
+-    signal,
+-  });
+-  const bytes = await readResponseBody(upstream, {
+-    maxBytes: 4 * 1024 * 1024,
+-    signal,
+-  });
++  const candidates = nativeAgentRelayCandidates();
++  const remembered = nativeAgentRelayModelsByAccount.get(accountScope);
++  if (remembered && candidates.includes(remembered)) {
++    candidates.splice(candidates.indexOf(remembered), 1);
++    candidates.unshift(remembered);
++  }
++  let upstream;
++  let bytes;
++  for (const [index, model] of candidates.entries()) {
++    body.model = model;
++    upstream = await fetch(nativeTarget("/responses", ""), {
++      method: "POST",
++      headers: { ...headers, Accept: "text/event-stream" },
++      body: JSON.stringify(body),
++      signal,
++    });
++    bytes = await readResponseBody(upstream, {
++      maxBytes: 4 * 1024 * 1024,
++      signal,
++    });
++    if (upstream.status !== 400 || !nativeRelayModelUnsupported(bytes, model)) break;
++    if (nativeAgentRelayModelsByAccount.get(accountScope) === model) {
++      nativeAgentRelayModelsByAccount.delete(accountScope);
++    }
++    if (index === candidates.length - 1) break;
++  }
+   if (!upstream.ok) {
+@@ -1925,2 +1953,7 @@ async function relayEncryptedAgentPayloadOnce(
+   }
++  nativeAgentRelayModelsByAccount.delete(accountScope);
++  nativeAgentRelayModelsByAccount.set(accountScope, body.model);
++  while (nativeAgentRelayModelsByAccount.size > 128) {
++    nativeAgentRelayModelsByAccount.delete(nativeAgentRelayModelsByAccount.keys().next().value);
++  }
+   rememberAgentPayload(cacheKey, plaintext);
+@@ -1986,2 +2019,3 @@ async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
+     key,
++    accountScope,
+     headers,
+diff --git a/test/routing.test.mjs b/test/routing.test.mjs
+index e155a77..892fb72 100644
+--- a/test/routing.test.mjs
++++ b/test/routing.test.mjs
+@@ -1530,3 +1530,3 @@ test("router relays encrypted Codex subagent payloads before external routing",
+     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-id");
+-    assert.equal(nativeRequests[0].body.model, "gpt-5.6-sol");
++    assert.equal(nativeRequests[0].body.model, "gpt-6-luna");
+     assert.equal(nativeRequests[0].body.stream, true);
+@@ -1606,2 +1606,128 @@ test("router relays encrypted Codex subagent payloads before external routing",
+ 
++test("native agent relay retries an account-rejected model and reuses the accepted model", async () => {
++  const nativeModels = [];
++  const native = await mockServer(async (request, response) => {
++    const body = await bodyJson(request);
++    nativeModels.push(body.model);
++    if (body.model === "gpt-6-luna") {
++      json(response, 400, {
++        detail: "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.",
++      });
++      return;
++    }
++    const payload = JSON.stringify({ payload: "Review only this change." });
++    response.writeHead(200, { "Content-Type": "text/event-stream" });
++    response.end(
++      `data: ${JSON.stringify({
++        type: "response.output_item.done",
++        item: { type: "function_call", name: "relay_external_agent_payload", arguments: payload },
++      })}\n\ndata: [DONE]\n\n`,
++    );
++  });
++  const gatewayRequests = [];
++  const gateway = await mockServer(async (request, response) => {
++    gatewayRequests.push(await bodyJson(request));
++    json(response, 200, { route: "external" });
++  });
++  const routerPort = await openPort();
++  const router = run("router.mjs", {
++    CODEX_ROUTER_PORT: String(routerPort),
++    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
++    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
++    CODEX_ROUTER_QUIET: "1",
++  });
++
++  const relay = (ciphertext, account = "account-id") => fetch(`${routerBase(routerPort)}/responses`, {
++    method: "POST",
++    headers: {
++      Authorization: "Bearer test-session",
++      "ChatGPT-Account-Id": account,
++      "Content-Type": "application/json",
++    },
++    body: JSON.stringify({
++      model: "kimi-oauth/k3",
++      input: [{
++        type: "agent_message",
++        content: [
++          { type: "input_text", text: "Message Type: NEW_TASK\nPayload:\n" },
++          { type: "encrypted_content", encrypted_content: ciphertext },
++        ],
++      }],
++    }),
++  });
++
++  try {
++    await waitFor(`${routerBase(routerPort)}/models`, router);
++    const first = await relay("gAAAAA-first-payload=");
++    assert.equal(first.status, 200, await first.text());
++    const second = await relay("gAAAAA-second-payload=");
++    assert.equal(second.status, 200, await second.text());
++    const otherAccount = await relay("gAAAAA-third-payload=", "other-account");
++    assert.equal(otherAccount.status, 200, await otherAccount.text());
++    assert.deepEqual(nativeModels, [
++      "gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-luna",
++    ]);
++    assert.equal(gatewayRequests.length, 3);
++    for (const body of gatewayRequests) {
++      assert.equal(body.input[0].content.at(-1).text, "Review only this change.");
++      assert.equal(body.input[0].content.some((part) => part.type === "encrypted_content"), false);
++    }
++    assert.doesNotMatch(router.testErrors(), /Review only this change|gAAAAA-first-payload/u);
++  } finally {
++    await stopChild(router);
++    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
++  }
++});
++
++test("native agent relay does not retry an unrelated 400 or override the configured model", async () => {
++  const nativeModels = [];
++  const native = await mockServer(async (request, response) => {
++    nativeModels.push((await bodyJson(request)).model);
++    json(response, 400, {
++      error: { message: "Unsupported tool_choice in PRIVATE_TASK_PAYLOAD" },
++    });
++  });
++  let gatewayRequests = 0;
++  const gateway = await mockServer(async (_request, response) => {
++    gatewayRequests += 1;
++    json(response, 200, { route: "external" });
++  });
++  const routerPort = await openPort();
++  const router = run("router.mjs", {
++    CODEX_ROUTER_PORT: String(routerPort),
++    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
++    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
++    MODEL_ROUTER_AGENT_RELAY_MODEL: "gpt-6-astra",
++    CODEX_ROUTER_QUIET: "1",
++  });
++  try {
++    await waitFor(`${routerBase(routerPort)}/models`, router);
++    const response = await fetch(`${routerBase(routerPort)}/responses`, {
++      method: "POST",
++      headers: {
++        Authorization: "Bearer test-session",
++        "Content-Type": "application/json",
++      },
++      body: JSON.stringify({
++        model: "kimi-oauth/k3",
++        input: [{
++          type: "agent_message",
++          content: [
++            { type: "input_text", text: "Message Type: MESSAGE\nPayload:\n" },
++            { type: "encrypted_content", encrypted_content: "gAAAAA-private=" },
++          ],
++        }],
++      }),
++    });
++    assert.notEqual(response.status, 200);
++    assert.equal(gatewayRequests, 0);
++    assert.deepEqual(nativeModels, ["gpt-6-astra"]);
++    assert.doesNotMatch(await response.text(), /PRIVATE_TASK_PAYLOAD|gAAAAA-private/u);
++    assert.doesNotMatch(router.testErrors(), /PRIVATE_TASK_PAYLOAD|gAAAAA-private/u);
++  } finally {
++    await stopChild(router);
++    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
++  }
++});
++
+ test("router preserves relay 401 so Codex can refresh authentication", async () => {
