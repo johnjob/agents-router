@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "updated": "2026-09-23",
+  "notes": "模型元数据校准表。上下文窗口/思考档位来自各 provider 目录，逐条证据见 calibration.md。改这里，然后跑 scripts/calibrate_models.py --apply。",
+  "providers": {
+    "jev": {
+      "displayName": "Jev Router",
+      "baseUrl": "http://127.0.0.1:4319/v1",
+      "adapter": "openai-responses",
+      "allowPrivate": true,
+      "description": "Jev 自动路由（本机）",
+      "models": [
+        {
+          "upstreamModel": "auto",
+          "displayName": "Jev Codex Router",
+          "description": "Auto-routing by Jev: every turn is classified and served by luna, sol, astra or AIHubMix DeepSeek at the thinking depth it needs.",
+          "priority": 95,
+          "defaultEffort": "medium",
+          "reasoningLevels": [
+            { "effort": "low", "description": "Quick reasoning" },
+            { "effort": "medium", "description": "Balanced reasoning" },
+            { "effort": "high", "description": "Deep reasoning" },
+            { "effort": "xhigh", "description": "Extended reasoning" },
+            { "effort": "max", "description": "Maximum reasoning" }
+          ],
+          "contextWindow": 258400,
+          "autoCompact": 219640,
+          "inputModalities": ["text", "image"]
+        }
+      ]
+    },
+    "aihubmix": {
+      "displayName": "AIHubMix",
+      "baseUrl": "https://aihubmix.com/v1",
+      "adapter": "openai-responses",
+      "allowPrivate": false,
+      "description": "AIHubMix 官方 OpenAI Responses 兼容端点",
+      "models": [
+        {
+          "upstreamModel": "deepseek-v4.1-flash",
+          "displayName": "deepseek-v4.1-flash (curated)",
+          "description": "AIHubMix DeepSeek V4.1 Flash; 1M context, low/high/max effort ladder.",
+          "priority": 100,
+          "defaultEffort": "high",
+          "reasoningLevels": [
+            { "effort": "low", "description": "Faster reasoning" },
+            { "effort": "high", "description": "Deep reasoning" },
+            { "effort": "max", "description": "Maximum reasoning depth" }
+          ],
+          "contextWindow": 1000000,
+          "autoCompact": 850000,
+          "inputModalities": ["text", "image"]
+        },
+        {
+          "upstreamModel": "glm-5.3",
+          "displayName": "glm-5.3 (curated)",
+          "description": "AIHubMix GLM-5.3; 1M context, low/high/max effort ladder.",
+          "priority": 101,
+          "defaultEffort": "max",
+          "reasoningLevels": [
+            { "effort": "low", "description": "Faster reasoning" },
+            { "effort": "high", "description": "Deep reasoning" },
+            { "effort": "max", "description": "Maximum reasoning depth" }
+          ],
+          "contextWindow": 1048576,
+          "autoCompact": 900000,
+          "inputModalities": ["text"]
+        },
+        {
+          "upstreamModel": "glm-5.3-flash",
+          "displayName": "glm-5.3-flash (curated)",
+          "description": "AIHubMix GLM-5.3 Flash; 1M context, low/high/max effort ladder.",
+          "priority": 102,
+          "defaultEffort": "max",
+          "reasoningLevels": [
+            { "effort": "low", "description": "Faster reasoning" },
+            { "effort": "high", "description": "Deep reasoning" },
+            { "effort": "max", "description": "Maximum reasoning depth" }
+          ],
+          "contextWindow": 1048576,
+          "autoCompact": 400000,
+          "inputModalities": ["text", "image"]
+        },
+        {
+          "upstreamModel": "kimi-k3",
+          "displayName": "kimi-k3 (curated)",
+          "description": "AIHubMix Kimi K3; 1M context, low/high/max effort ladder.",
+          "priority": 103,
+          "defaultEffort": "max",
+          "reasoningLevels": [
+            { "effort": "low", "description": "Faster reasoning" },
+            { "effort": "high", "description": "Balanced deep reasoning" },
+            { "effort": "max", "description": "Maximum reasoning depth" }
+          ],
+          "contextWindow": 1048576,
+          "autoCompact": 900000,
+          "inputModalities": ["text", "image"]
+        },
+        {
+          "upstreamModel": "qwen-3.8-27b",
+          "displayName": "qwen-3.8-27b (curated)",
+          "description": "AIHubMix Qwen 3.8 27B; provider catalog declares no effort ladder.",
+          "priority": 104,
+          "defaultEffort": "high",
+          "reasoningLevels": [
+            { "effort": "high", "description": "Compatibility reasoning level; provider catalog declares no effort ladder" }
+          ],
+          "contextWindow": 131072,
+          "autoCompact": 110000,
+          "inputModalities": ["text", "image"]
+        },
+        {
+          "upstreamModel": "grok-4.7",
+          "displayName": "grok-4.7 (curated)",
+          "description": "AIHubMix Grok 4.7; provider catalog declares no effort ladder.",
+          "priority": 105,
+          "defaultEffort": "high",
+          "reasoningLevels": [
+            { "effort": "high", "description": "Compatibility reasoning level; provider catalog declares no effort ladder" }
+          ],
+          "contextWindow": 500000,
+          "autoCompact": 425000,
+          "inputModalities": ["text", "image"]
+        },
+        {
+          "upstreamModel": "mimo-v2.6-flash",
+          "displayName": "mimo-v2.6-flash (curated)",
+          "description": "AIHubMix MiMo v2.6 Flash; provider catalog declares no effort ladder.",
+          "priority": 106,
+          "defaultEffort": "high",
+          "reasoningLevels": [
+            { "effort": "high", "description": "Compatibility reasoning level; provider catalog declares no effort ladder" }
+          ],
+          "contextWindow": 1048576,
+          "autoCompact": 900000,
+          "inputModalities": ["text", "image"]
+        },
+        {
+          "upstreamModel": "mimo-v2.6-pro",
+          "displayName": "mimo-v2.6-pro (curated)",
+          "description": "AIHubMix MiMo v2.6 Pro; provider catalog declares no effort ladder.",
+          "priority": 107,
+          "defaultEffort": "high",
+          "reasoningLevels": [
+            { "effort": "high", "description": "Compatibility reasoning level; provider catalog declares no effort ladder" }
+          ],
+          "contextWindow": 1048576,
+          "autoCompact": 900000,
+          "inputModalities": ["text", "image"]
+        },
+        {
+          "upstreamModel": "gpt-6-astra",
+          "displayName": "gpt-6-astra (curated)",
+          "description": "AIHubMix GPT-6 Astra; low/medium/high/xhigh/max effort ladder declared by the endpoint.",
+          "priority": 108,
+          "defaultEffort": "medium",
+          "reasoningLevels": [
+            { "effort": "low", "description": "Fast responses with lighter reasoning" },
+            { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+            { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+            { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
+            { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" }
+          ],
+          "contextWindow": 272000,
+          "autoCompact": 231200,
+          "inputModalities": ["text", "image"]
+        }
+      ]
+    },
+    "ccsub": {
+      "displayName": "CCSub",
+      "baseUrl": "https://ccsub.inferera.com/v1",
+      "adapter": "openai-responses",
+      "allowPrivate": false,
+      "description": "CCSub sub2api provider",
+      "models": [
+        { "upstreamModel": "gpt-5.6-luna", "displayName": "gpt-5.6-luna (curated)", "priority": 100 },
+        { "upstreamModel": "gpt-5.6-sol", "displayName": "gpt-5.6-sol (curated)", "priority": 101 },
+        { "upstreamModel": "gpt-5.6-terra", "displayName": "gpt-5.6-terra (curated)", "priority": 102 },
+        { "upstreamModel": "gpt-5.6", "displayName": "gpt-5.6 (curated)", "priority": 103 },
+        { "upstreamModel": "gpt-5.5", "displayName": "gpt-5.5 (curated)", "priority": 104 },
+        { "upstreamModel": "gpt-5.4", "displayName": "gpt-5.4 (curated)", "priority": 105 },
+        { "upstreamModel": "gpt-5.4-mini", "displayName": "gpt-5.4-mini (curated)", "priority": 106 },
+        { "upstreamModel": "gpt-5.3-codex-spark", "displayName": "gpt-5.3-codex-spark (curated)", "priority": 107 },
+        { "upstreamModel": "gpt-5.2", "displayName": "gpt-5.2 (curated)", "priority": 108 },
+        { "upstreamModel": "gpt-6-astra", "displayName": "gpt-6-astra (curated)", "priority": 109 }
+      ],
+      "defaults": {
+        "description": "User-curated ccsub model; conservative default metadata.",
+        "defaultEffort": "high",
+        "reasoningLevels": [
+          { "effort": "high", "description": "Compatibility reasoning level; provider catalog declares no effort ladder" }
+        ],
+        "contextWindow": 375000,
+        "autoCompact": 318750,
+        "inputModalities": ["text"]
+      }
+    }
+  }
+}

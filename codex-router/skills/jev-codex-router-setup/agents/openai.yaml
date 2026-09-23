@@ -1,0 +1,4 @@
+interface:
+  display_name: "Jev Codex Router 集成"
+  short_description: "装好 Jev 路由、外部模型、密钥与思考档位"
+  default_prompt: "Use $jev-codex-router-setup to install and calibrate the Jev Codex Router integration on this machine."

@@ -1,0 +1,1435 @@
+diff --git a/.gitignore b/.gitignore
+index 04b3a57..141f30e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -3,6 +3,7 @@ shadow-log.jsonl
+ *.jsonl
+ *.log
+ *.bak
++*.bak-*
+ 
+ # Python
+ __pycache__/
+diff --git a/README.md b/README.md
+index 5513601..4b66d23 100644
+--- a/README.md
++++ b/README.md
+@@ -31,7 +31,7 @@ Codex ──▶ Codex Router (:4202)
+                             │
+                             └─ canonical Codex replay + decision
+                                └─▶ local caller edge (shared native session)
+-                                    └─▶ luna / sol / astra
++                                    └─▶ luna / sol / astra / AIHubMix DeepSeek
+ ```
+ 
+ - **Responses in, Responses out** — no format conversion; the SSE stream is
+@@ -57,8 +57,8 @@ Codex ──▶ Codex Router (:4202)
+ 
+ ## Routing policy
+ 
+-The shared contract in `server/routing_policy.py` gives Jev 15 explicit pairs:
+-Luna, Sol or Astra × low, medium, high, xhigh or max thinking. Jev chooses the
++The shared contract in `server/routing_policy.py` gives Jev 20 explicit pairs:
++Luna, Sol, Astra or AIHubMix DeepSeek × low, medium, high, xhigh or max thinking. Jev chooses the
+ pair in one Choice question, using capability profiles and the current request,
+ recent assistant intent, and the available tool result. Every pair uses standard
+ speed, overriding an incoming Fast setting, including retries and bypass modes.
+@@ -79,7 +79,7 @@ native-quota exhaustion are operational bypasses, not Jev decisions.
+ 
+ ### Codex-dry tandem — only while native usage is exhausted
+ 
+-The triptych is the policy **unless** the ChatGPT usage window is exhausted
++The four-candidate normal route is the policy **unless** the ChatGPT usage window is exhausted
+ (manual sentinel file, or an automatic flip on a 429 / usage-limit response,
+ which also retries the failed call on the tandem). While dry:
+ 
+@@ -234,7 +234,7 @@ cd <codex-router checkout>
+       "provider": "jev",
+       "listed": true,
+       "displayName": "Jev Codex Router",
+-      "description": "Auto-routing by Jev: every turn is classified and served by luna, sol or astra at the thinking depth it needs.",
++      "description": "Auto-routing by Jev: every turn is classified and served by luna, sol, astra or AIHubMix DeepSeek at the thinking depth it needs.",
+       "priority": 95,
+       "defaultEffort": "medium",
+       "reasoningLevels": [
+diff --git a/poc/backtest_savings.py b/poc/backtest_savings.py
+index bc36e4d..6c70491 100644
+--- a/poc/backtest_savings.py
++++ b/poc/backtest_savings.py
+@@ -26,12 +26,18 @@ RESULT_PATH = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
+ # Prices per 1M tokens (short context, OpenAI API page, Sep 2026)
+ PRICES = {
+     "gpt-6-astra":   (10.00, 50.00, 1.00, 12.50),   # (input, output, cached_in, cache_write)
++    "gpt-6-sol":     (2.00, 10.00, 0.20, 2.50),
++    "gpt-6-luna":    (0.10, 0.50, 0.01, 0.125),
+     "gpt-5.6-sol":   (4.00, 20.00, 0.40, 5.00),
+     "gpt-5.6-terra": (2.00, 12.00, 0.20, 2.50),
+     "gpt-5.6-luna":  (0.20, 1.20, 0.02, 0.25),
+     # off-peak, aligned with V4 Flash (cf. router docs)
+     "deepseek/deepseek-v4.1-flash": (0.15, 0.60, 0.015, 0.15),
+ }
++for _model in poc.CANDIDATES:
++    _leaf = _model.split("/")[-1]
++    if _leaf in PRICES:
++        PRICES[_model] = PRICES[_leaf]
+ TAG_CLEAN = re.compile(r"<[^>]+>")
+ 
+ 
+@@ -173,7 +179,7 @@ def main():
+             if r_info is None:
+                 skipped += 1
+                 continue
+-            r = ("gpt-6-astra" if r_info.get("tier") is None
++            r = (poc.FALLBACK_MODEL if r_info.get("tier") is None
+                  else route_policy(r_info["tier"], r_info.get("depth"), r_info.get("conf")))
+             cj = cost(r, tok)
+         except KeyError:
+diff --git a/poc/route_poc.py b/poc/route_poc.py
+index 607e94c..ecc39ec 100644
+--- a/poc/route_poc.py
++++ b/poc/route_poc.py
+@@ -14,7 +14,7 @@ import argparse, json, os, sys, time, urllib.error, urllib.request
+ API = "https://api.typesafe.ai/v1/systemone"
+ 
+ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server"))
+-from routing_policy import (MODEL_PROFILES, POLICY_VERSION, QUESTIONS,
++from routing_policy import (FALLBACK_MODEL, MODEL_PROFILES, POLICY_VERSION, QUESTIONS,
+                             decision_from_answers, route)
+ 
+ CANDIDATES = MODEL_PROFILES
+diff --git a/scripts/enable-max-reasoning-effort.sh b/scripts/enable-max-reasoning-effort.sh
+new file mode 100755
+index 0000000..c7bc3a5
+--- /dev/null
++++ b/scripts/enable-max-reasoning-effort.sh
+@@ -0,0 +1,24 @@
++#!/usr/bin/env bash
++#
++# 兼容入口：让 Codex 客户端把 max（最高）档放进模型控件。
++#
++# 实现在 jev-codex-router-setup skill 里（跨平台、幂等、带备份）：
++#   ~/.codex/skills/jev-codex-router-setup/scripts/enable_max_effort.sh
++#
++# 保留本文件是为了让仓库里的旧路径继续可用。
++set -euo pipefail
++
++CANONICAL="${CODEX_HOME:-$HOME/.codex}/skills/jev-codex-router-setup/scripts/enable_max_effort.sh"
++
++if [[ ! -x "$CANONICAL" ]]; then
++  cat >&2 <<EOF
++找不到 skill 里的实现：$CANONICAL
++
++请先安装 skill（把 jev-codex-router-setup 放进 \$CODEX_HOME/skills），
++或直接手动：退出 Codex，在 \$CODEX_HOME/.codex-global-state.json 的
++electron-persisted-atom-state.enabled-reasoning-efforts 里加上 "max"，再打开 Codex。
++EOF
++  exit 1
++fi
++
++exec "$CANONICAL" "$@"
+diff --git a/server/install-service.sh b/server/install-service.sh
+index b745e65..3fc571a 100755
+--- a/server/install-service.sh
++++ b/server/install-service.sh
+@@ -16,6 +16,30 @@ LOGDIR="$HOME/Library/Logs"
+ [ -x "$PYTHON" ] || { echo "python3 not found"; exit 1; }
+ mkdir -p "$LOGDIR"
+ 
++# A python.org framework build ships no CA bundle of its own, so an https call
++# made by the service fails certificate verification unless SSL_CERT_FILE
++# points at one. The user's shell usually has it exported; launchd does not
++# inherit it, so resolve a readable bundle here and embed it in the plist.
++CA_FILE="${SSL_CERT_FILE:-}"
++if [ ! -r "$CA_FILE" ]; then
++  CA_FILE=""
++  for candidate in /etc/ssl/cert.pem \
++                   "${HOMEBREW_PREFIX:-/opt/homebrew}/etc/ca-certificates/cacert.pem" \
++                   /usr/local/etc/ca-certificates/cacert.pem; do
++    if [ -r "$candidate" ]; then CA_FILE="$candidate"; break; fi
++  done
++fi
++if [ -n "$CA_FILE" ]; then
++  ENV_BLOCK="  <key>EnvironmentVariables</key>
++  <dict>
++    <key>SSL_CERT_FILE</key><string>$CA_FILE</string>
++  </dict>"
++  echo "Using CA bundle: $CA_FILE"
++else
++  ENV_BLOCK=""
++  echo "Warning: no readable CA bundle found; https calls from the service may fail" >&2
++fi
++
+ cat > "$PLIST" <<EOF
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+@@ -32,6 +56,7 @@ cat > "$PLIST" <<EOF
+   <key>StandardOutPath</key><string>$LOGDIR/jev-router.out.log</string>
+   <key>StandardErrorPath</key><string>$LOGDIR/jev-router.err.log</string>
+   <key>WorkingDirectory</key><string>$REPO</string>
++$ENV_BLOCK
+ </dict>
+ </plist>
+ EOF
+diff --git a/server/jev_server.py b/server/jev_server.py
+index 52fc2bc..1df7606 100644
+--- a/server/jev_server.py
++++ b/server/jev_server.py
+@@ -83,8 +83,11 @@ import time
+ import urllib.request
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ 
+-from routing_policy import (ASTRA, EFFORTS, LUNA, POLICY_VERSION, QUESTIONS, SOL,
+-                            TIERS, decision_from_answers, route)
++from routing_policy import (ASTRA, DEEPSEEK, EFFORTS, FALLBACK_EFFORT,
++                            FALLBACK_MODEL, FRONTIER_MODEL, LUNA,
++                            POLICY_VERSION, QUESTIONS, ROUTE_LABELS, SOL,
++                            TIERS, decision_from_answers, provider_effort_for,
++                            route)
+ 
+ HOME = os.path.expanduser("~")
+ STATE = os.path.join(HOME, ".codex", "codex-router")
+@@ -111,10 +114,34 @@ ROUTER = ("127.0.0.1", 4202)
+ DISPLAY_NAME = "Jev Codex Router"
+ VERSION = "1.3"
+ 
+-API = "https://api.typesafe.ai/v1/systemone"
++DEFAULT_API = "https://api.typesafe.ai/v1/systemone"
+ MODEL = "jev-latest"
+ 
+ 
++def env_setting(name):
++    """Read NAME from the env files first, then the process environment.
++
++    The files win: a stale exported value must not shadow the configured one.
++    """
++    for path in (ENV_PATH, os.path.join(HOME, ".jev.env")):
++        try:
++            with open(path, encoding="utf-8") as fh:
++                for line in fh:
++                    line = line.strip()
++                    if line.startswith(name + "="):
++                        value = line.split("=", 1)[1].strip().strip('"').strip("'")
++                        if value:
++                            return value
++        except OSError:
++            continue
++    return os.environ.get(name, "").strip()
++
++
++# System One endpoint. Overridable so a gateway can front it: set JEV_API_URL in
++# ~/.hermes/.env (or ~/.jev.env), or in the process environment.
++API = env_setting("JEV_API_URL") or DEFAULT_API
++
++
+ # Generic ask surface (POST /ask): a thin typed pass-through to System One for
+ # callers that own their question set — the in-app browser chooser is the first
+ # one. No routing policy, no logging of the caller's state.
+@@ -140,6 +167,17 @@ TANDEM_EFFORT = {
+     "medium": "high", "high": "high",
+     "xhigh": "max", "max": "max", "ultra": "max",
+ }
++def provider_effort(model, effort):
++    """Map a Jev effort to the provider ladder for one model.
++
++    The per-model ladder lives in route_models.json (`effort_map`). A model
++    without one takes the depth unchanged, which is what the native GPT routes
++    expect; a routed reseller whose catalog declares fewer rungs (AIHubMix
++    DeepSeek, for example) lists the folds there instead of hardcoding them here.
++    """
++    return provider_effort_for(model, effort)
++
++
+ # A status the *other* half of the tandem might still answer. opencode Go meters
+ # the two Go models against separate allowances, and its gateway reports a spent
+ # allowance with the same 429/503 shape as a transient one, so one more attempt
+@@ -204,18 +242,7 @@ _log_lock = threading.Lock()
+ 
+ def load_key():
+     """TYPESAFE_API_KEY: env files win (the process environment can be stale)."""
+-    for path in (ENV_PATH, os.path.join(HOME, ".jev.env")):
+-        try:
+-            with open(path, encoding="utf-8") as fh:
+-                for line in fh:
+-                    line = line.strip()
+-                    if line.startswith("TYPESAFE_API_KEY="):
+-                        value = line.split("=", 1)[1].strip().strip('"').strip("'")
+-                        if value:
+-                            return value
+-        except OSError:
+-            continue
+-    return os.environ.get("TYPESAFE_API_KEY", "").strip()
++    return env_setting("TYPESAFE_API_KEY")
+ 
+ 
+ def caller_secret():
+@@ -326,7 +353,7 @@ def tandem_effort(effort, native_model=None):
+         return TANDEM_EFFORT[effort]
+     # An absent or unknown depth keeps the tier's own habit: the frontier goes as
+     # deep as it can, everything else starts at the middle rung.
+-    return "max" if native_model == ASTRA else "high"
++    return "max" if native_model == FRONTIER_MODEL else "high"
+ 
+ 
+ def other_tandem(target):
+@@ -336,7 +363,7 @@ def other_tandem(target):
+ 
+ def dry_target(native_model, effort):
+     """Codex-dry tandem: frontier-tier steps -> GLM, everything else -> deepseek."""
+-    target = GO_FRONTIER if native_model == ASTRA else GO_STANDARD
++    target = GO_FRONTIER if native_model == FRONTIER_MODEL else GO_STANDARD
+     return target, tandem_effort(effort, native_model)
+ 
+ 
+@@ -593,12 +620,11 @@ def _debug_shape(payload):
+     }
+ 
+ 
+-ROUTE_GLYPHS = {
+-    "gpt-5.6-luna": ("luna", "⚡"),      # cheap tier, adaptive thinking
+-    "gpt-5.6-sol": ("sol", "🧠"),        # reasoning workhorse
+-    "gpt-6-astra": ("astra", "🚀"),      # frontier
+-    "gpt-5.6-terra": ("terra", "🌍"),
+-}
++# Labels and glyphs come from route_models.json so a replaced candidate shows
++# its own tag without touching this file. `gpt-5.6-terra` is display-only:
++# Codex can show that native template even though Jev never routes to it.
++ROUTE_GLYPHS = dict(ROUTE_LABELS)
++ROUTE_GLYPHS["gpt-5.6-terra"] = ("terra", "🌍")
+ TANDEM_GLYPHS = {
+     "deepseek-v4.1-flash": ("deepseek", "🐳"),  # Go standard (native dry)
+     "glm-5.3-flash": ("glm", "✨"),             # Go frontier (native dry)
+@@ -1199,7 +1225,7 @@ class Handler(BaseHTTPRequestHandler):
+         held = None if os.path.exists(OFF_PATH) else turn_route_lookup(
+             scope, task, step, n_items)
+         if os.path.exists(OFF_PATH):
+-            model, effort, speed, gate = ASTRA, None, "default", "off"
++            model, effort, speed, gate = FALLBACK_MODEL, None, "default", "off"
+         elif held is not None:
+             sticky = True
+             model, effort, speed = held["model"], held["effort"], held["speed"]
+@@ -1224,10 +1250,12 @@ class Handler(BaseHTTPRequestHandler):
+                                          decision["confidence"])
+                     model, effort, speed, gate = route(tier, depth)
+                 except Exception as exc:
+-                    model, effort, speed, gate = ASTRA, "medium", "default", f"jev_error:{type(exc).__name__}"
++                    model, effort, speed, gate = (FALLBACK_MODEL, FALLBACK_EFFORT,
++                                                  "default", f"jev_error:{type(exc).__name__}")
+                 jev_ms = int((time.time() - jt0) * 1000)
+             else:
+-                model, effort, speed, gate = ASTRA, "medium", "default", "no_key_or_task"
++                model, effort, speed, gate = (FALLBACK_MODEL, FALLBACK_EFFORT,
++                                              "default", "no_key_or_task")
+             turn_route_remember(scope, task, {
+                 "model": model, "effort": effort, "speed": speed, "gate": gate,
+                 "tier": tier, "depth": depth, "conf": conf, "decision": decision,
+@@ -1236,7 +1264,7 @@ class Handler(BaseHTTPRequestHandler):
+         would = None
+         if os.path.exists(SHADOW_PATH):
+             would = {"model": model, "effort": effort, "speed": speed, "gate": gate}
+-            model, effort, speed, gate = ASTRA, None, "default", "shadow(astra)"
++            model, effort, speed, gate = FALLBACK_MODEL, None, "default", "shadow(astra)"
+ 
+         # Codex-dry tandem: ONLY while native usage is exhausted (manual flag or
+         # observed quota failure) the triptych is replaced — GLM for frontier
+@@ -1247,6 +1275,8 @@ class Handler(BaseHTTPRequestHandler):
+             model, effort = dry_target(native_model, effort)
+             speed = "default"
+             gate = f"codex_dry({dry_reason}):{native_model}"
++        if model in TIERS:
++            effort = provider_effort(model, effort)
+ 
+         # Display the model actually serving the request, including shadow and
+         # operational fallbacks, rather than a hypothetical classification.
+diff --git a/server/manage_route_models.py b/server/manage_route_models.py
+new file mode 100644
+index 0000000..4c58fd2
+--- /dev/null
++++ b/server/manage_route_models.py
+@@ -0,0 +1,388 @@
++#!/usr/bin/env python3
++"""Add, replace, or remove a Jev routing candidate without editing source.
++
++    python3 server/manage_route_models.py list
++    python3 server/manage_route_models.py add opencode-go-glm-5-3 --label glm \
++        --glyph "✨" --profile "GLM-5.3 via opencode Go." --effort-map medium=high,xhigh=max
++    python3 server/manage_route_models.py replace aihubmix-deepseek-v4-1-flash \
++        --label glm --glyph "✨"
++    python3 server/manage_route_models.py remove gpt-6-astra
++    python3 server/manage_route_models.py set-fallback --model gpt-6-astra --effort medium
++
++The registry is server/route_models.json; routing_policy.py reads it. Every
++mutation backs the file up, runs the server test suite, restarts the service,
++and health-checks it. Use --dry-run / --no-test / --no-restart to opt out.
++"""
++
++import argparse
++import json
++import os
++import platform
++import shutil
++import subprocess
++import sys
++import time
++import urllib.error
++import urllib.request
++from datetime import datetime
++from pathlib import Path
++
++SERVER_DIR = Path(__file__).resolve().parent
++REPO_DIR = SERVER_DIR.parent
++DEFAULT_DATA_FILE = Path(os.environ.get("JEV_ROUTE_MODELS")
++                         or SERVER_DIR / "route_models.json")
++DEFAULT_LABEL = os.environ.get("JEV_ROUTER_LABEL", "com.thibaultsaintjean.jev-router")
++HEALTH_URL = "http://127.0.0.1:4319/health"
++
++
++def load_registry(path):
++    payload = json.loads(Path(path).read_text(encoding="utf-8"))
++    payload.setdefault("version", 1)
++    payload.setdefault("efforts", [])
++    payload.setdefault("models", [])
++    payload.setdefault("fallback", {})
++    return payload
++
++
++def seed_registry():
++    """Build the registry from the policy the process is currently running."""
++    sys.path.insert(0, str(SERVER_DIR))
++    import routing_policy as policy  # imported here so --help works anywhere
++
++    return {
++        "version": 1,
++        "notes": "Jev normal-route candidates. Edited by manage_route_models.py.",
++        "policy_version": policy.POLICY_VERSION,
++        "efforts": list(policy.EFFORTS),
++        "fallback": {"model": policy.FALLBACK_MODEL, "effort": policy.FALLBACK_EFFORT},
++        "models": [
++            {
++                "id": model["id"],
++                "alias": model["alias"],
++                "label": model["label"],
++                "glyph": model["glyph"],
++                "profile": model["profile"],
++                **({"effort_map": model["effort_map"]} if model["effort_map"] else {}),
++            }
++            for model in policy.ROUTE_MODELS
++        ],
++    }
++
++
++def load_or_seed(path):
++    if Path(path).exists():
++        return load_registry(path), False
++    return seed_registry(), True
++
++
++def validate(registry):
++    models = registry.get("models") or []
++    efforts = [str(item).strip() for item in registry.get("efforts") or []]
++    if not models:
++        raise ValueError("registry needs at least one route model")
++    if not efforts:
++        raise ValueError("registry needs at least one effort")
++    if len(set(efforts)) != len(efforts):
++        raise ValueError("efforts must be unique")
++
++    seen = set()
++    for model in models:
++        model_id = str(model.get("id") or "").strip()
++        if not model_id:
++            raise ValueError("every model needs a non-empty id")
++        if model_id in seen:
++            raise ValueError("duplicate model id: {}".format(model_id))
++        seen.add(model_id)
++        if not str(model.get("glyph") or "").strip():
++            raise ValueError("{} needs a glyph".format(model_id))
++        effort_map = model.get("effort_map") or {}
++        if not isinstance(effort_map, dict):
++            raise ValueError("{} effort_map must be an object".format(model_id))
++        for source, target in effort_map.items():
++            if source not in efforts:
++                raise ValueError(
++                    "{} maps unknown effort {}; add it to efforts first".format(model_id, source))
++            if not str(target or "").strip():
++                raise ValueError("{} maps {} to an empty rung".format(model_id, source))
++
++    fallback = registry.get("fallback") or {}
++    fallback_model = str(fallback.get("model") or "").strip()
++    if fallback_model and fallback_model not in seen:
++        raise ValueError("fallback model {} is not a route model".format(fallback_model))
++    fallback_effort = str(fallback.get("effort") or "").strip()
++    if fallback_effort and fallback_effort not in efforts:
++        raise ValueError("fallback effort {} is not in efforts".format(fallback_effort))
++    frontier_ids = [model["id"] for model in models if model.get("frontier")]
++    if len(frontier_ids) != 1:
++        raise ValueError(
++            "exactly one model must be the frontier tier (set-frontier MODEL); found: {}".format(
++                ", ".join(frontier_ids) or "none"))
++    return registry
++
++
++def _entry(model_id, label, glyph, profile, alias, effort_map, frontier=False):
++    entry = {
++        "id": model_id,
++        "alias": alias or "",
++        "label": label or model_id.split("/")[-1],
++        "glyph": glyph or "⚡",
++        "profile": profile or "",
++    }
++    if frontier:
++        entry["frontier"] = True
++    if effort_map:
++        entry["effort_map"] = dict(effort_map)
++    return entry
++
++
++def add_model(registry, entry, position=None):
++    if any(model.get("id") == entry["id"] for model in registry["models"]):
++        raise ValueError("{} already exists; use replace".format(entry["id"]))
++    if position is None or position >= len(registry["models"]):
++        registry["models"].append(entry)
++    else:
++        registry["models"].insert(max(position, 0), entry)
++    return registry
++
++
++def replace_model(registry, model_id, entry, position=None):
++    for index, model in enumerate(registry["models"]):
++        if model.get("id") != model_id:
++            continue
++        kept_alias = model.get("alias") if not entry.get("alias") else entry["alias"]
++        replacement = dict(entry)
++        replacement["alias"] = kept_alias
++        if model.get("frontier") and not replacement.get("frontier"):
++            replacement["frontier"] = True
++        if position is None:
++            registry["models"][index] = replacement
++        else:
++            registry["models"].pop(index)
++            registry["models"].insert(max(position, 0), replacement)
++        if registry.get("fallback", {}).get("model") == model_id:
++            registry["fallback"]["model"] = replacement["id"]
++        return registry
++    raise ValueError("{} is not a route model; use add".format(model_id))
++
++
++def remove_model(registry, model_id):
++    removed = next((model for model in registry["models"] if model.get("id") == model_id), {})
++    remaining = [model for model in registry["models"] if model.get("id") != model_id]
++    if len(remaining) == len(registry["models"]):
++        raise ValueError("{} is not a route model".format(model_id))
++    if not remaining:
++        raise ValueError("refusing to remove the last route model")
++    registry["models"] = remaining
++    if registry.get("fallback", {}).get("model") == model_id:
++        registry["fallback"]["model"] = remaining[0]["id"]
++    if removed.get("frontier") and not any(model.get("frontier") for model in remaining):
++        remaining[0]["frontier"] = True
++    return registry
++
++
++def set_frontier(registry, model_id):
++    """Mark exactly one model as the frontier tier (the codex-dry GLM target)."""
++    if model_id not in {model.get("id") for model in registry["models"]}:
++        raise ValueError("{} is not a route model".format(model_id))
++    for model in registry["models"]:
++        if model.get("id") == model_id:
++            model["frontier"] = True
++        else:
++            model.pop("frontier", None)
++    return registry
++
++
++def set_fallback(registry, model, effort=None):
++    ids = {item.get("id") for item in registry["models"]}
++    if model not in ids:
++        raise ValueError("{} is not a route model".format(model))
++    registry.setdefault("fallback", {})["model"] = model
++    if effort:
++        registry["fallback"]["effort"] = effort
++    return registry
++
++
++def parse_effort_map(raw):
++    mapping = {}
++    for item in (raw or "").split(","):
++        item = item.strip()
++        if not item:
++            continue
++        if "=" not in item:
++            raise ValueError("effort map entries look like medium=high,xhigh=max")
++        source, target = item.split("=", 1)
++        mapping[source.strip()] = target.strip()
++    return mapping
++
++
++def run_tests():
++    return subprocess.run(
++        [sys.executable, "-m", "unittest", "discover", "-s", "server", "-p", "test_*.py"],
++        cwd=str(REPO_DIR), capture_output=True, text=True, check=False,
++    )
++
++
++def restart_service():
++    system = platform.system()
++    if system == "Darwin":
++        target = "gui/{}/{}".format(os.getuid(), DEFAULT_LABEL)
++        return subprocess.run(["launchctl", "kickstart", "-k", target],
++                              capture_output=True, text=True, check=False)
++    if system == "Linux":
++        probe = subprocess.run(["systemctl", "--user", "show-environment"],
++                               capture_output=True, text=True, check=False)
++        if probe.returncode == 0:
++            return subprocess.run(["systemctl", "--user", "restart", "jev-router"],
++                                  capture_output=True, text=True, check=False)
++    raise RuntimeError("no launchd/systemd service found; restart the Jev server yourself")
++
++
++def wait_healthy(timeout=20.0):
++    deadline = time.time() + timeout
++    while time.time() < deadline:
++        try:
++            with urllib.request.urlopen(HEALTH_URL, timeout=3) as resp:
++                if json.loads(resp.read().decode("utf-8", "replace")).get("ok"):
++                    return True
++        except (urllib.error.URLError, OSError, ValueError):
++            pass
++        time.sleep(1)
++    return False
++
++
++def describe(registry):
++    lines = ["efforts: {}".format(", ".join(registry["efforts"]))]
++    fallback = registry.get("fallback") or {}
++    lines.append("fallback: {} @ {}".format(fallback.get("model"), fallback.get("effort")))
++    for index, model in enumerate(registry["models"]):
++        effort_map = model.get("effort_map") or {}
++        fold = "  map={}".format(
++            ",".join("{}->{}".format(k, v) for k, v in effort_map.items())) if effort_map else ""
++        frontier = "  frontier" if model.get("frontier") else ""
++        lines.append("{:>2}. {:<34} {:<10} {}{}{}".format(
++            index, model.get("id"), model.get("label") or "", model.get("glyph") or "",
++            fold, frontier))
++    lines.append("route pairs: {}".format(len(registry["models"]) * len(registry["efforts"])))
++    return "\n".join(lines)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__,
++                                     formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("command", nargs="?", default="list",
++                        choices=["list", "seed", "add", "replace", "remove",
++                                 "set-fallback", "set-frontier"])
++    parser.add_argument("model_id", nargs="?",
++                        help="model id for add/replace/remove/set-frontier")
++    parser.add_argument("--data-file", default=str(DEFAULT_DATA_FILE))
++    parser.add_argument("--label")
++    parser.add_argument("--glyph")
++    parser.add_argument("--profile")
++    parser.add_argument("--alias")
++    parser.add_argument("--effort-map", help="medium=high,xhigh=max")
++    parser.add_argument("--frontier", action="store_true",
++                        help="add/replace: mark this model as the frontier tier")
++    parser.add_argument("--position", type=int)
++    parser.add_argument("--model", help="set-fallback: model id")
++    parser.add_argument("--effort", help="set-fallback: effort")
++    parser.add_argument("--json", action="store_true", help="list: print raw JSON")
++    parser.add_argument("--dry-run", action="store_true")
++    parser.add_argument("--no-test", action="store_true", help="skip the server test suite")
++    parser.add_argument("--no-restart", action="store_true", help="write only; do not restart")
++    args = parser.parse_args()
++
++    path = Path(args.data_file)
++
++    if args.command == "list":
++        registry, _seeded = load_or_seed(path)
++        validate(registry)
++        print(json.dumps(registry, ensure_ascii=False, indent=2) if args.json else describe(registry))
++        return 0
++
++    registry, seeded = load_or_seed(path)
++    if seeded:
++        print("note: {} did not exist; seeded from the running policy".format(path))
++
++    if args.command == "seed":
++        validate(registry)
++        if args.dry_run:
++            print(describe(registry))
++            return 0
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++        print("wrote {}".format(path))
++        return 0
++
++    effort_map = parse_effort_map(args.effort_map)
++    try:
++        if args.command in ("add", "replace"):
++            if not args.model_id:
++                raise ValueError("{} needs a model id".format(args.command))
++            entry = _entry(args.model_id, args.label, args.glyph, args.profile,
++                           args.alias, effort_map, frontier=args.frontier)
++            if args.command == "add":
++                add_model(registry, entry, args.position)
++            else:
++                replace_model(registry, args.model_id, entry, args.position)
++        elif args.command == "set-frontier":
++            if not args.model_id:
++                raise ValueError("set-frontier needs a model id")
++            set_frontier(registry, args.model_id)
++        elif args.command == "remove":
++            if not args.model_id:
++                raise ValueError("remove needs a model id")
++            remove_model(registry, args.model_id)
++        else:
++            target = args.model or args.model_id
++            if not target:
++                raise ValueError("set-fallback needs --model")
++            set_fallback(registry, target, args.effort)
++        validate(registry)
++    except ValueError as exc:
++        print("error: {}".format(exc), file=sys.stderr)
++        return 2
++
++    print(describe(registry))
++    if args.dry_run:
++        print("\n(dry-run; nothing written)")
++        return 0
++
++    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
++    backup = path.with_name("{}.bak-{}-before-{}".format(
++        path.name, stamp, args.command.replace("-", "_")))
++    if path.exists():
++        shutil.copy2(path, backup)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    print("\nwrote {} (backup: {})".format(path, backup if path.exists() else "-"))
++
++    if not args.no_test:
++        result = run_tests()
++        if result.returncode != 0:
++            if backup.exists():
++                shutil.copy2(backup, path)
++                print("server tests failed; restored {}".format(path), file=sys.stderr)
++            print((result.stdout or "")[-1500:], file=sys.stderr)
++            print((result.stderr or "")[-1500:], file=sys.stderr)
++            return 1
++        print("server tests: OK")
++
++    if args.no_restart:
++        print("skip restart; the running server keeps the previous registry until it restarts")
++        return 0
++
++    try:
++        result = restart_service()
++    except RuntimeError as exc:
++        print("warning: {}（新表会在下次启动时生效）".format(exc), file=sys.stderr)
++        return 0
++    if result.returncode != 0:
++        print("restart failed: {}".format((result.stderr or result.stdout or "").strip()[:300]),
++              file=sys.stderr)
++        return 1
++    print("service restarted; health: {}".format("ok" if wait_healthy() else "not healthy yet"))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/server/report_routing.py b/server/report_routing.py
+index d1c71fd..cd10382 100644
+--- a/server/report_routing.py
++++ b/server/report_routing.py
+@@ -60,21 +60,33 @@ import os
+ import statistics
+ import sys
+ 
++import routing_policy
++
+ LIVE_LOG = os.path.expanduser("~/.codex/codex-router/jev-router-live.jsonl")
+ BACKTEST_STATE = os.path.expanduser("~/.codex/codex-router/jev-backtest.json")
+ 
+-LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
++LUNA, SOL, ASTRA = routing_policy.LUNA, routing_policy.SOL, routing_policy.ASTRA
++NORMAL_ROUTES = tuple(routing_policy.TIERS)
+ 
+ # Prices per 1M tokens (input, output, cached input, cache write), short context,
+ # Sep 2026 — kept identical to poc/backtest_savings.py so the two tools agree.
+ PRICES = {
+-    ASTRA: (10.00, 50.00, 1.00, 12.50),
+-    SOL: (4.00, 20.00, 0.40, 5.00),
++    "gpt-6-astra": (10.00, 50.00, 1.00, 12.50),
++    "gpt-6-sol": (2.00, 10.00, 0.20, 2.50),
++    "gpt-6-luna": (0.10, 0.50, 0.01, 0.125),
++    "gpt-5.6-sol": (4.00, 20.00, 0.40, 5.00),
+     "gpt-5.6-terra": (2.00, 12.00, 0.20, 2.50),
+-    LUNA: (0.20, 1.20, 0.02, 0.25),
++    "gpt-5.6-luna": (0.20, 1.20, 0.02, 0.25),
++    # AIHubMix's DeepSeek route uses the existing DeepSeek V4.1 Flash estimate.
++    # This is an API-equivalent reporting rate, not an AIHubMix invoice.
++    "aihubmix/deepseek-v4.1-flash": (0.15, 0.60, 0.015, 0.15),
+     # Codex-dry tandem (Go allowance), off-peak.
+     "deepseek/deepseek-v4.1-flash": (0.15, 0.60, 0.015, 0.15),
+ }
++for _model in NORMAL_ROUTES:
++    _leaf = _model.split("/")[-1]
++    if _leaf in PRICES:
++        PRICES[_model] = PRICES[_leaf]
+ API_FAST_X = 2.0
+ 
+ # Token mix per turn, from the measurement published in BACKTEST.md: 237 turns,
+@@ -82,12 +94,9 @@ API_FAST_X = 2.0
+ # 1,616,250 output tokens.
+ MIX = {"input": 2_886_560, "cached": 2_836_607, "output": 6_819}
+ 
+-# Short names of the native triptych, then the tandem family. Anything else is
+-# reported under its own leaf name.
++# 常规路由的短名，然后是 Codex-dry tandem。其他模型按自身 leaf 名称展示。
+ SHORT = {
+-    LUNA: "luna",
+-    SOL: "sol",
+-    ASTRA: "astra",
++    **{model: routing_policy.ROUTE_LABELS[model][0] for model in NORMAL_ROUTES},
+     "opencode-go/deepseek-v4.1-flash": "tandem",
+     "deepseek/deepseek-v4.1-flash": "tandem",
+     "opencode-go/glm-5.3-flash": "tandem",
+@@ -99,8 +108,17 @@ CONF_GATE = 0.5  # historical diagnostics only; joint routing has no confidence
+ # Standard ChatGPT credit rates, 2026-09-20:
+ # https://learn.chatgpt.com/docs/pricing
+ # (input, cached input, output) per million tokens. Reasoning is part of output.
+-CREDIT_RATES = {LUNA: (5.0, 0.5, 30.0), SOL: (100.0, 10.0, 500.0),
+-                ASTRA: (250.0, 25.0, 1250.0)}
++CREDIT_RATES = {
++    "gpt-6-astra": (250.0, 25.0, 1250.0),
++    "gpt-6-sol": (50.0, 5.0, 250.0),
++    "gpt-6-luna": (2.5, 0.25, 12.5),
++    "gpt-5.6-sol": (100.0, 10.0, 500.0),
++    "gpt-5.6-luna": (5.0, 0.5, 30.0),
++}
++for _model in NORMAL_ROUTES:
++    _leaf = _model.split("/")[-1]
++    if _leaf in CREDIT_RATES:
++        CREDIT_RATES[_model] = CREDIT_RATES[_leaf]
+ 
+ 
+ def token_credits(model, usage):
+@@ -172,7 +190,10 @@ def turn_cost(model, mix=None, speed="default"):
+         return None
+     mix = mix or MIX
+     p_in, p_out, p_cached, p_write = PRICES[key]
+-    if key in (LUNA, SOL, ASTRA, "gpt-5.6-terra") and speed in ("priority", "fast"):
++    if key.split("/")[-1] in {
++        "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
++        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
++    } and speed in ("priority", "fast"):
+         p_in, p_out, p_cached, p_write = (p_in * API_FAST_X, p_out * API_FAST_X,
+                                         p_cached * API_FAST_X, p_write * API_FAST_X)
+     cached = min(mix["cached"], mix["input"])
+@@ -261,7 +282,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
+         model = entry.get("model") or "(none)"
+         conf = entry.get("conf")
+         served = entry.get("tier")
+-        if model in (LUNA, SOL, ASTRA):
++        if model in NORMAL_ROUTES:
+             natives += 1
+         elif SHORT.get(model) == "tandem":
+             dry += 1
+@@ -281,7 +302,7 @@ def summarize(entries, days, stats, log_path, backtest_path=None):
+         else:
+             row["cost_units"] += unit
+             real_units += unit
+-            if model in (LUNA, SOL, ASTRA):
++            if model in NORMAL_ROUTES:
+                 native_units += unit
+         gates[entry.get("gate") or "(none)"] = gates.get(entry.get("gate") or "(none)", 0) + 1
+         tier_key = served if served is not None else "(none)"
+diff --git a/server/route_models.json b/server/route_models.json
+new file mode 100644
+index 0000000..ecea8fd
+--- /dev/null
++++ b/server/route_models.json
+@@ -0,0 +1,51 @@
++{
++  "version": 1,
++  "notes": "Jev 正常路由候选表。用 server/manage_route_models.py 增删改，别手改 routing_policy.py。id 必须写 caller edge 认的模型 id，也就是目录里的 slug：路由模型用 厂商/模型（如 aihubmix/deepseek-v4.1-flash），原生模型用其自身 id（如 gpt-5.6-sol）。写成 gateway id（aihubmix-deepseek-v4-1-flash）会被 edge 判成不支持的模型直接 400。",
++  "policy_version": "joint-v1-standard",
++  "efforts": [
++    "low",
++    "medium",
++    "high",
++    "xhigh",
++    "max"
++  ],
++  "fallback": {
++    "model": "ccsub/gpt-6-sol",
++    "effort": "medium"
++  },
++  "models": [
++    {
++      "id": "ccsub/gpt-6-luna",
++      "alias": "LUNA",
++      "label": "luna",
++      "glyph": "⚡",
++      "profile": "GPT-6 Luna via CCSub for focused, high-volume tasks."
++    },
++    {
++      "id": "ccsub/gpt-6-sol",
++      "alias": "SOL",
++      "label": "sol",
++      "glyph": "🧠",
++      "profile": "GPT-6 Sol via CCSub for complex coding and agentic workflows.",
++      "frontier": true
++    },
++    {
++      "id": "aihubmix/gpt-6-astra",
++      "alias": "ASTRA",
++      "label": "astra",
++      "glyph": "🚀",
++      "profile": "GPT-6 Astra via AIHubMix for the hardest end-to-end reasoning."
++    },
++    {
++      "id": "aihubmix/deepseek-v4.1-flash",
++      "alias": "DEEPSEEK",
++      "label": "deepseek",
++      "glyph": "🐳",
++      "profile": "DeepSeek V4.1 Flash via AIHubMix.",
++      "effort_map": {
++        "medium": "high",
++        "xhigh": "max"
++      }
++    }
++  ]
++}
+diff --git a/server/routing_policy.py b/server/routing_policy.py
+index ffcf4d6..de771bd 100644
+--- a/server/routing_policy.py
++++ b/server/routing_policy.py
+@@ -1,18 +1,160 @@
+-"""Shared Jev decision contract: one model/effort choice, no scenario overrides."""
++"""Shared Jev decision contract: one model/effort choice, no scenario overrides.
++
++The routing candidates live in `route_models.json` next to this module so a new
++or replaced model is a data change, not a source edit in two files. Use
++`manage_route_models.py` to add/replace/remove entries and to restart the
++service; this module only reads the registry and derives the exported tables.
++
++`_DEFAULT_ROUTE_MODELS` is the copy used when the JSON is missing or invalid —
++it keeps a damaged checkout serving the same policy instead of failing to
++start. A registry that exists but cannot be parsed logs a warning on stderr.
++"""
++import json
+ import math
++import os
++import sys
++
++DEFAULT_POLICY_VERSION = "joint-v1-standard"
++DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
++
++ROUTE_MODELS_PATH = os.environ.get("JEV_ROUTE_MODELS") or os.path.join(
++    os.path.dirname(os.path.abspath(__file__)), "route_models.json")
++
++# Fallback copy of server/route_models.json. The JSON is the editable source of
++# truth; this table only exists so a missing or unreadable registry cannot take
++# the router down. `manage_route_models.py seed` regenerates the JSON from here.
++_DEFAULT_ROUTE_MODELS = [
++    {
++        "id": "ccsub/gpt-6-luna",
++        "alias": "LUNA",
++        "label": "luna",
++        "glyph": "⚡",
++        "profile": "GPT-6 Luna via CCSub for focused, high-volume tasks.",
++    },
++    {
++        "id": "ccsub/gpt-6-sol",
++        "alias": "SOL",
++        "label": "sol",
++        "glyph": "🧠",
++        "profile": "GPT-6 Sol via CCSub for complex coding and agentic workflows.",
++        "frontier": True,
++    },
++]
++_DEFAULT_FALLBACK = {"model": "ccsub/gpt-6-sol", "effort": "medium"}
++
++
++def normalize_models(raw_models):
++    """Normalize registry entries into the shape the rest of the server reads."""
++    models = []
++    for raw in raw_models or []:
++        if not isinstance(raw, dict):
++            continue
++        model_id = str(raw.get("id") or "").strip()
++        if not model_id:
++            continue
++        effort_map = raw.get("effort_map") or {}
++        if not isinstance(effort_map, dict):
++            effort_map = {}
++        models.append({
++            "id": model_id,
++            "alias": str(raw.get("alias") or "").strip(),
++            "label": str(raw.get("label") or model_id.split("/")[-1]).strip(),
++            "glyph": str(raw.get("glyph") or "⚡").strip(),
++            "profile": str(raw.get("profile") or "").strip(),
++            "frontier": bool(raw.get("frontier")),
++            "effort_map": {str(k): str(v) for k, v in effort_map.items()},
++        })
++    return models
++
++
++def load_route_models(path=None):
++    """Read the editable registry, falling back to the built-in defaults."""
++    target = path or ROUTE_MODELS_PATH
++    try:
++        with open(target, encoding="utf-8") as fh:
++            payload = json.load(fh)
++        models = normalize_models(payload.get("models"))
++        efforts = [str(item).strip() for item in payload.get("efforts") or []
++                   if str(item).strip()]
++        if not models or not efforts:
++            raise ValueError("registry needs at least one model and one effort")
++        fallback = payload.get("fallback") or {}
++        return {
++            "policy_version": str(payload.get("policy_version")
++                                  or DEFAULT_POLICY_VERSION).strip(),
++            "efforts": efforts,
++            "models": models,
++            "fallback": {
++                "model": str(fallback.get("model") or models[0]["id"]).strip(),
++                "effort": str(fallback.get("effort")
++                              or (efforts[0] if efforts else "")).strip(),
++            },
++        }
++    except (OSError, ValueError) as exc:
++        sys.stderr.write(
++            "routing_policy: cannot read {} ({}); using built-in route models\n"
++            .format(target, exc))
++        return {
++            "policy_version": DEFAULT_POLICY_VERSION,
++            "efforts": list(DEFAULT_EFFORTS),
++            "models": normalize_models(_DEFAULT_ROUTE_MODELS),
++            "fallback": dict(_DEFAULT_FALLBACK),
++        }
++
++
++REGISTRY = load_route_models()
++POLICY_VERSION = REGISTRY["policy_version"]
++ROUTE_MODELS = REGISTRY["models"]
++EFFORTS = list(REGISTRY["efforts"])
++TIERS = tuple(model["id"] for model in ROUTE_MODELS)
+ 
+-POLICY_VERSION = "joint-v1-standard"
+-LUNA, SOL, ASTRA = "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra"
+-TIERS = (LUNA, SOL, ASTRA)
+-EFFORTS = ["low", "medium", "high", "xhigh", "max"]
++FALLBACK_MODEL = REGISTRY["fallback"]["model"]
++FALLBACK_EFFORT = REGISTRY["fallback"]["effort"]
+ 
++ROUTE_LABELS = {model["id"]: (model["label"], model["glyph"]) for model in ROUTE_MODELS}
++EFFORT_MAPS = {model["id"]: dict(model["effort_map"]) for model in ROUTE_MODELS}
++# The frontier tier is the one the codex-dry tandem sends to GLM. It travels as
++# an explicit registry flag so replacing the strongest model is a data change
++# rather than a rename hunt for whichever id the constant happened to hold.
++# An empty value means the registry declares no frontier: the dry-tandem
++# frontier branch is then inert instead of silently promoting an arbitrary tier.
++FRONTIER_MODEL = next((model["id"] for model in ROUTE_MODELS if model["frontier"]), "")
+ # Capability descriptions are priors, not benchmark-derived success rates.
+ # No task labels, keywords, target model shares, or confidence cutoffs select a route.
+-MODEL_PROFILES = {
+-    LUNA: "Lower-capacity, cost-optimized member of GPT-5.6.",
+-    SOL: "Higher-capacity GPT-5.6 model for complex professional work.",
+-    ASTRA: "Most capable model, intended for the hardest end-to-end reasoning work.",
+-}
++MODEL_PROFILES = {model["id"]: model["profile"] for model in ROUTE_MODELS}
++
++_DEFAULT_ALIASES = {model["alias"]: model["id"]
++                    for model in normalize_models(_DEFAULT_ROUTE_MODELS)}
++
++
++def _alias(name):
++    """Resolve a stable constant. A removed model keeps pointing at the id the
++    default registry used, so `model in TIERS` stays False instead of matching
++    a misspelled literal."""
++    for model in ROUTE_MODELS:
++        if model["alias"] == name:
++            return model["id"]
++    return _DEFAULT_ALIASES.get(name, name)
++
++
++LUNA = _alias("LUNA")
++SOL = _alias("SOL")
++DEEPSEEK = _alias("DEEPSEEK")
++# Compatibility name for the frontier role: every check that used to ask "is this
++# the astra tier" now asks "is this the frontier tier".
++ASTRA = FRONTIER_MODEL
++
++
++def effort_map(model):
++    """The provider-side rungs this model accepts, mapped from the Jev depth."""
++    return EFFORT_MAPS.get(model, {})
++
++
++def provider_effort_for(model, effort):
++    """Map a Jev depth onto the ladder this specific model declares."""
++    return effort_map(model).get(effort, effort)
++
++
+ DEPTH_PROFILES = {
+     "low": "A small reasoning budget.",
+     "medium": "A moderate reasoning budget.",
+diff --git a/server/test_jev_server.py b/server/test_jev_server.py
+index c765956..2032a90 100644
+--- a/server/test_jev_server.py
++++ b/server/test_jev_server.py
+@@ -141,8 +141,14 @@ class QuotaReset(unittest.TestCase):
+ 
+ class DryTandem(unittest.TestCase):
+     def test_frontier_steps_go_to_glm_and_the_rest_to_deepseek(self):
+-        self.assertEqual(jev.dry_target(jev.ASTRA, "high")[0], jev.GO_FRONTIER)
+-        for tier in (jev.LUNA, jev.SOL):
++        # The registry names one tier as the frontier; that role, not a specific
++        # model id, decides which half of the tandem serves the hardest step.
++        self.assertEqual(jev.FRONTIER_MODEL, jev.ASTRA)
++        self.assertIn(jev.FRONTIER_MODEL, jev.TIERS)
++        self.assertEqual(jev.dry_target(jev.FRONTIER_MODEL, "high")[0], jev.GO_FRONTIER)
++        others = [tier for tier in jev.TIERS if tier != jev.FRONTIER_MODEL]
++        self.assertTrue(others, "the pool needs at least one non-frontier tier")
++        for tier in others:
+             self.assertEqual(jev.dry_target(tier, "high")[0], jev.GO_STANDARD)
+ 
+     def test_the_tandem_never_receives_a_rung_its_model_cannot_serve(self):
+@@ -161,8 +167,11 @@ class DryTandem(unittest.TestCase):
+         self.assertEqual(jev.tandem_effort("xhigh", jev.SOL), "max")
+ 
+     def test_an_absent_depth_keeps_the_tier_habit(self):
+-        self.assertEqual(jev.tandem_effort(None, jev.ASTRA), "max")
+-        self.assertEqual(jev.tandem_effort(None, jev.SOL), "high")
++        # The frontier goes as deep as it can; everything else starts at the
++        # middle rung. LUNA is the non-frontier example so the assertion stays
++        # true when the frontier changes model.
++        self.assertEqual(jev.tandem_effort(None, jev.FRONTIER_MODEL), "max")
++        self.assertEqual(jev.tandem_effort(None, jev.LUNA), "high")
+ 
+     def test_mapping_is_idempotent_so_a_fallback_cannot_drift(self):
+         # The fallback remaps the rung it already carries; a second pass must not
+@@ -175,6 +184,15 @@ class DryTandem(unittest.TestCase):
+         self.assertEqual(jev.other_tandem(jev.GO_STANDARD), jev.GO_FRONTIER)
+         self.assertEqual(jev.other_tandem(jev.GO_FRONTIER), jev.GO_STANDARD)
+ 
++    def test_route_labels_and_efforts_follow_the_registry(self):
++        for model in jev.TIERS:
++            self.assertEqual(jev.route_label(model), jev.ROUTE_LABELS[model])
++            for effort in jev.EFFORTS:
++                self.assertEqual(
++                    jev.provider_effort(model, effort),
++                    jev.provider_effort_for(model, effort),
++                )
++
+ 
+ class TandemRetry(unittest.TestCase):
+     def test_transient_and_allowance_statuses_are_retried(self):
+@@ -301,5 +319,65 @@ class JevTaskInput(unittest.TestCase):
+         self.assertEqual(len(state["previous_assistant"]), 240)
+ 
+ 
++class SystemOneEndpoint(unittest.TestCase):
++    """The System One endpoint can be fronted by a gateway.
++
++    The default stays the official TypeSafe API. `JEV_API_URL` redirects the
++    call, which lets an OpenAI-compatible gateway (AIHubMix, a local proxy)
++    serve the same System One contract. Env files win over the process
++    environment, so a stale export cannot outrank the configured endpoint.
++    """
++
++    def setUp(self):
++        self.tmpdir = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmpdir.cleanup)
++        self.env_file = os.path.join(self.tmpdir.name, "hermes.env")
++        for patcher in (mock.patch.object(jev, "ENV_PATH", self.env_file),
++                        mock.patch.object(jev, "HOME", self.tmpdir.name),
++                        mock.patch.dict(os.environ, {"JEV_API_URL": "",
++                                                     "TYPESAFE_API_KEY": ""})):
++            patcher.start()
++            self.addCleanup(patcher.stop)
++
++    def write_env(self, text):
++        with open(self.env_file, "w", encoding="utf-8") as fh:
++            fh.write(text)
++
++    def test_the_official_endpoint_is_the_default(self):
++        self.assertEqual(jev.DEFAULT_API, "https://api.typesafe.ai/v1/systemone")
++        self.assertEqual(jev.env_setting("JEV_API_URL") or jev.DEFAULT_API,
++                         "https://api.typesafe.ai/v1/systemone")
++
++    def test_the_env_file_redirects_the_endpoint(self):
++        self.write_env("JEV_API_URL=https://aihubmix.com/v1/systemone\n")
++        self.assertEqual(jev.env_setting("JEV_API_URL"),
++                         "https://aihubmix.com/v1/systemone")
++
++    def test_the_env_file_wins_over_a_stale_export(self):
++        self.write_env("JEV_API_URL=https://aihubmix.com/v1/systemone\n")
++        with mock.patch.dict(os.environ, {"JEV_API_URL": "https://stale.example"}):
++            self.assertEqual(jev.env_setting("JEV_API_URL"),
++                             "https://aihubmix.com/v1/systemone")
++
++    def test_the_process_environment_is_the_fallback(self):
++        with mock.patch.dict(os.environ, {"JEV_API_URL": "https://gateway.example"}):
++            self.assertEqual(jev.env_setting("JEV_API_URL"), "https://gateway.example")
++
++    def test_an_unset_setting_is_empty_and_a_blank_one_is_ignored(self):
++        self.assertEqual(jev.env_setting("JEV_API_URL"), "")
++        self.write_env("JEV_API_URL=\n")
++        self.assertEqual(jev.env_setting("JEV_API_URL"), "")
++
++    def test_quotes_around_a_value_are_stripped(self):
++        self.write_env('JEV_API_URL="https://aihubmix.com/v1/systemone"\n')
++        self.assertEqual(jev.env_setting("JEV_API_URL"),
++                         "https://aihubmix.com/v1/systemone")
++
++    def test_the_key_loader_keeps_the_documented_precedence(self):
++        self.write_env("TYPESAFE_API_KEY=file-key\n")
++        with mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": "stale-key"}):
++            self.assertEqual(jev.load_key(), "file-key")
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/server/test_replay_policy.py b/server/test_replay_policy.py
+index 3952154..a58e237 100644
+--- a/server/test_replay_policy.py
++++ b/server/test_replay_policy.py
+@@ -50,8 +50,8 @@ class ReplayPolicy(unittest.TestCase):
+             data = json.loads(result.read_text())
+             self.assertEqual(data["turns"], 1)
+             self.assertEqual(data["skipped_turns"], 1)
+-            self.assertEqual(data["jev_usd"], 0.2)
+-            self.assertEqual(data["scenarios_usd"][routing_policy.SOL], 4.0)
++            self.assertEqual(data["jev_usd"], 0.1)
++            self.assertEqual(data["scenarios_usd"][routing_policy.SOL], 2.0)
+             self.assertEqual(data["policy_version"], routing_policy.POLICY_VERSION)
+ 
+     def test_identical_short_replies_do_not_share_different_contexts(self):
+diff --git a/server/test_route_models.py b/server/test_route_models.py
+new file mode 100644
+index 0000000..11fb890
+--- /dev/null
++++ b/server/test_route_models.py
+@@ -0,0 +1,160 @@
++"""The route-model registry is the single source of truth for Jev candidates.
++
++Adding or replacing a candidate must stay a data edit: these checks fail if the
++JSON and the tables the server actually imports drift apart, and they pin the
++manager's add/replace/remove semantics so a swap cannot silently drop the
++frontier fallback or reorder the tier list by accident.
++"""
++import json
++import tempfile
++import unittest
++from pathlib import Path
++
++import jev_server as jev
++import manage_route_models as mgr
++import routing_policy as policy
++
++REGISTRY_PATH = Path(policy.ROUTE_MODELS_PATH)
++
++
++class RegistryMatchesPolicy(unittest.TestCase):
++    def test_shipped_registry_matches_the_imported_policy(self):
++        registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
++        self.assertEqual([model["id"] for model in registry["models"]], list(policy.TIERS))
++        self.assertEqual(registry["efforts"], list(policy.EFFORTS))
++        self.assertEqual(registry["fallback"]["model"], policy.FALLBACK_MODEL)
++        self.assertEqual(registry["fallback"]["effort"], policy.FALLBACK_EFFORT)
++        for model in registry["models"]:
++            self.assertEqual(policy.ROUTE_LABELS[model["id"]],
++                             (model["label"], model["glyph"]))
++            self.assertEqual(policy.effort_map(model["id"]), model.get("effort_map", {}))
++
++    def test_registry_keeps_the_verified_candidates_and_ladders(self):
++        registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
++        by_id = {model["id"]: model for model in registry["models"]}
++        self.assertIn(policy.LUNA, by_id)
++        self.assertIn(policy.SOL, by_id)
++        self.assertIn(policy.ASTRA, by_id)
++        self.assertEqual(set(by_id), set(policy.TIERS))
++
++    def test_labels_and_effort_maps_reach_the_server(self):
++        for model in policy.ROUTE_MODELS:
++            model_id = model["id"]
++            self.assertEqual(jev.route_label(model_id),
++                             (model["label"], model["glyph"]))
++            for effort in policy.EFFORTS:
++                self.assertEqual(jev.provider_effort(model_id, effort),
++                                 model["effort_map"].get(effort, effort))
++        # Display-only native template is still tagged.
++        self.assertEqual(jev.route_label("gpt-5.6-terra"), ("terra", "🌍"))
++
++    def test_the_registry_names_exactly_one_frontier_tier(self):
++        registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
++        frontier = [model["id"] for model in registry["models"] if model.get("frontier")]
++        self.assertEqual(len(frontier), 1, "the pool declares exactly one frontier tier")
++        self.assertEqual(policy.FRONTIER_MODEL, frontier[0])
++        self.assertIn(policy.FRONTIER_MODEL, policy.TIERS)
++        self.assertEqual(jev.ASTRA, policy.FRONTIER_MODEL)
++        self.assertEqual(jev.dry_target(policy.FRONTIER_MODEL, "high")[0], jev.GO_FRONTIER)
++
++
++class RegistryLoading(unittest.TestCase):
++    def test_override_file_is_read_instead_of_the_defaults(self):
++        payload = {
++            "policy_version": "test",
++            "efforts": ["low", "high"],
++            "fallback": {"model": "custom-tier", "effort": "low"},
++            "models": [{"id": "custom-tier", "alias": "CUSTOM", "label": "custom",
++                        "glyph": "x", "profile": "test"}],
++        }
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "route_models.json"
++            path.write_text(json.dumps(payload), encoding="utf-8")
++            registry = policy.load_route_models(str(path))
++        self.assertEqual([model["id"] for model in registry["models"]], ["custom-tier"])
++        self.assertEqual(registry["fallback"]["model"], "custom-tier")
++        self.assertEqual(registry["policy_version"], "test")
++
++    def test_missing_file_falls_back_to_the_builtin_candidates(self):
++        registry = policy.load_route_models("/nonexistent/route_models.json")
++        ids = [model["id"] for model in registry["models"]]
++        self.assertEqual(ids, ["ccsub/gpt-6-luna", "ccsub/gpt-6-sol"])
++        self.assertEqual(registry["fallback"]["model"], "ccsub/gpt-6-sol")
++        self.assertEqual(registry["efforts"], policy.DEFAULT_EFFORTS)
++
++
++class ManagerMutations(unittest.TestCase):
++    def setUp(self):
++        self.registry = {
++            "version": 1,
++            "efforts": ["low", "medium", "high", "xhigh", "max"],
++            "fallback": {"model": "astra", "effort": "medium"},
++            "models": [
++                {"id": "luna", "label": "luna", "glyph": "a"},
++                {"id": "astra", "label": "astra", "glyph": "b"},
++            ],
++        }
++
++    def test_add_appends_or_inserts_and_replace_keeps_the_alias(self):
++        entry = mgr._entry("glm", "glm", "g", "GLM.", "GLM", {"medium": "high"})
++        mgr.add_model(self.registry, entry)
++        self.assertEqual([m["id"] for m in self.registry["models"]], ["luna", "astra", "glm"])
++
++        mgr.add_model(self.registry, mgr._entry("cheap", "cheap", "c", "", "", {}), position=0)
++        self.assertEqual(self.registry["models"][0]["id"], "cheap")
++
++        mgr.replace_model(self.registry, "astra", mgr._entry("astra", "star", "*", "New.", "", {}))
++        replaced = next(m for m in self.registry["models"] if m["id"] == "astra")
++        self.assertEqual((replaced["label"], replaced["glyph"]), ("star", "*"))
++
++    def test_remove_moves_the_fallback_to_a_surviving_model(self):
++        mgr.remove_model(self.registry, "astra")
++        self.assertEqual([m["id"] for m in self.registry["models"]], ["luna"])
++        self.assertEqual(self.registry["fallback"]["model"], "luna")
++
++    def test_validate_rejects_duplicates_unknown_efforts_and_bad_fallback(self):
++        with self.assertRaises(ValueError):
++            mgr.validate({**self.registry, "models": [self.registry["models"][0]] * 2})
++        broken = json.loads(json.dumps(self.registry))
++        broken["models"][0]["effort_map"] = {"none": "low"}
++        with self.assertRaises(ValueError):
++            mgr.validate(broken)
++        stale = json.loads(json.dumps(self.registry))
++        stale["fallback"]["model"] = "gone"
++        with self.assertRaises(ValueError):
++            mgr.validate(stale)
++
++    def test_last_model_cannot_be_removed(self):
++        single = {**self.registry, "models": [self.registry["models"][0]]}
++        with self.assertRaises(ValueError):
++            mgr.remove_model(single, "luna")
++
++    def test_set_fallback_requires_a_known_model(self):
++        mgr.set_fallback(self.registry, "luna", "high")
++        self.assertEqual(self.registry["fallback"], {"model": "luna", "effort": "high"})
++        with self.assertRaises(ValueError):
++            mgr.set_fallback(self.registry, "missing")
++
++    def test_frontier_stays_singular_and_survives_removal(self):
++        mgr.set_frontier(self.registry, "astra")
++        self.assertEqual([m["id"] for m in self.registry["models"] if m.get("frontier")], ["astra"])
++        mgr.set_frontier(self.registry, "luna")
++        self.assertEqual([m["id"] for m in self.registry["models"] if m.get("frontier")], ["luna"])
++        mgr.remove_model(self.registry, "luna")
++        self.assertEqual([m["id"] for m in self.registry["models"] if m.get("frontier")], ["astra"])
++
++        duplicate = json.loads(json.dumps(self.registry))
++        duplicate["models"].append(
++            {"id": "second-frontier", "label": "second", "glyph": "s", "frontier": True})
++        with self.assertRaises(ValueError):
++            mgr.validate(duplicate)
++
++        undeclared = json.loads(json.dumps(self.registry))
++        for model in undeclared["models"]:
++            model.pop("frontier", None)
++        with self.assertRaises(ValueError):
++            mgr.validate(undeclared)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/server/test_route_policy.py b/server/test_route_policy.py
+index 2981c6a..4451a08 100644
+--- a/server/test_route_policy.py
++++ b/server/test_route_policy.py
+@@ -33,6 +33,16 @@ class JointPolicy(unittest.TestCase):
+             self.assertEqual(result["chosen_probability"], 0.2)
+             self.assertEqual(result["gate"], "apply")
+ 
++    def test_every_registry_model_is_a_normal_route_candidate(self):
++        # Every tier crossed with every depth is a valid pair; the pool itself
++        # is data (server/route_models.json), so the count follows it.
++        self.assertEqual(len(ROUTE_PAIRS), len(jev.TIERS) * len(jev.EFFORTS))
++        for model in jev.TIERS:
++            for effort in jev.EFFORTS:
++                result = decision_from_answers(self.answer(f"{model}:{effort}"))
++                self.assertEqual((result["model"], result["effort"]),
++                                 (model, effort))
++
+     def test_invalid_choices_cannot_become_an_unrequested_pair(self):
+         for answer in ({}, None, {"route": None}, {"route": {"choice": []}},
+                        {"route": {"choice": f"{jev.LUNA}:ultra"}},
+diff --git a/server/test_routing_usage.py b/server/test_routing_usage.py
+index 5d9af91..b586993 100644
+--- a/server/test_routing_usage.py
++++ b/server/test_routing_usage.py
+@@ -32,8 +32,8 @@ class Usage(unittest.TestCase):
+     def test_reasoning_is_not_billed_twice(self):
+         usage = {"input_tokens": 1_000_000, "cached_input_tokens": 800_000,
+                  "output_tokens": 100_000, "reasoning_tokens": 90_000}
+-        self.assertEqual(report.token_credits(j.SOL, usage), 78.0)
+-        self.assertEqual(report.token_credits(j.LUNA, usage), 4.4)
++        self.assertEqual(report.token_credits(j.SOL, usage), 39.0)
++        self.assertEqual(report.token_credits(j.LUNA, usage), 1.95)
+ 
+     def test_retries_count_and_external_fallback_does_not_inflate_native_savings(self):
+         usage = {"input_tokens": 1_000_000, "cached_input_tokens": 0, "output_tokens": 0}
+@@ -48,16 +48,21 @@ class Usage(unittest.TestCase):
+         self.assertEqual(result["priced_attempts"], 2)
+         self.assertEqual(result["unknown_attempts"], 1)
+         self.assertEqual(result["legacy_calls_without_attempts"], 1)
+-        self.assertEqual(result["routed_credits"], 105.0)
+-        self.assertEqual(result["all_sol_credits"], 200.0)
+-        self.assertEqual(result["all_astra_credits"], 500.0)
++        self.assertEqual(result["routed_credits"], 52.5)
++        self.assertEqual(result["all_sol_credits"], 100.0)
++        self.assertEqual(result["all_astra_credits"], 100.0)
+ 
+     def test_historical_fast_calls_keep_their_api_surcharge(self):
+-        for model in j.TIERS:
++        for model in (j.LUNA, j.SOL, j.ASTRA):
+             self.assertAlmostEqual(report.turn_cost(model, speed="priority"),
+                                    2 * report.turn_cost(model, speed="default"))
+             self.assertAlmostEqual(report.turn_cost(model, speed="fast"),
+                                    2 * report.turn_cost(model, speed="default"))
++        # AIHubMix is an external gateway route and has no native API fast tier.
++        deepseek = "aihubmix/deepseek-v4.1-flash"
++        self.assertIsNotNone(report.turn_cost(deepseek))
++        self.assertEqual(report.turn_cost(deepseek, speed="priority"),
++                         report.turn_cost(deepseek, speed="default"))
+ 
+ 
+ if __name__ == "__main__":

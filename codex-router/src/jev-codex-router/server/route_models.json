@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "notes": "Jev 正常路由候选表。用 server/manage_route_models.py 增删改，别手改 routing_policy.py。id 必须写 caller edge 认的模型 id，也就是目录里的 slug：路由模型用 厂商/模型（如 aihubmix/deepseek-v4.1-flash），原生模型用其自身 id（如 gpt-5.6-sol）。写成 gateway id（aihubmix-deepseek-v4-1-flash）会被 edge 判成不支持的模型直接 400。",
+  "policy_version": "joint-v1-standard",
+  "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "fallback": {
+    "model": "ccsub/gpt-6-sol",
+    "effort": "medium"
+  },
+  "models": [
+    {
+      "id": "ccsub/gpt-6-luna",
+      "alias": "LUNA",
+      "label": "luna",
+      "glyph": "⚡",
+      "profile": "GPT-6 Luna via CCSub for focused, high-volume tasks."
+    },
+    {
+      "id": "ccsub/gpt-6-sol",
+      "alias": "SOL",
+      "label": "sol",
+      "glyph": "🧠",
+      "profile": "GPT-6 Sol via CCSub for complex coding and agentic workflows.",
+      "frontier": true
+    },
+    {
+      "id": "aihubmix/gpt-6-astra",
+      "alias": "ASTRA",
+      "label": "astra",
+      "glyph": "🚀",
+      "profile": "GPT-6 Astra via AIHubMix for the hardest end-to-end reasoning."
+    },
+    {
+      "id": "aihubmix/deepseek-v4.1-flash",
+      "alias": "DEEPSEEK",
+      "label": "deepseek",
+      "glyph": "🐳",
+      "profile": "DeepSeek V4.1 Flash via AIHubMix.",
+      "effort_map": {
+        "medium": "high",
+        "xhigh": "max"
+      }
+    }
+  ]
+}
