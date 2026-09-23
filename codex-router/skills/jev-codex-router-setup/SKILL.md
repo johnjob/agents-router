@@ -24,7 +24,10 @@ description: 在用户的机器上安装、配置并校准 Jev Codex Router 集�
    决定分支；不要假设路径、平台或已装组件。
 4. **每步之后验证。** 至少跑 `scripts/verify_stack.py` 里对应的检查项。
 5. **可回滚、不误删。** 脚本写文件前必须备份。绝不删除用户已有的 provider、
-   模型条目或状态文件内容，只做合并式修改。
+   模型条目或状态文件内容，只做合并式修改。动任何配置之前先跑
+   `scripts/backup_codex_state.sh` 留一份整体基线，还原用
+   `scripts/restore_codex_state.sh`
+   （见 [references/backup-restore.md](references/backup-restore.md)）。
 
 ## 前置条件
 
@@ -52,6 +55,16 @@ python3 scripts/detect_env.py --json
 输出里 `capabilities` 标出缺什么、`paths` 给出本机实际路径。缺 Codex Router
 或 Node/Python 版本不够时，先按 environment-matrix 里的对应小节引导用户补齐，
 不要继续后面的步骤。
+
+**探测完立刻快照，再动任何配置。** 后面几步会改 `~/.codex/config.toml`、桌面端状态、
+Codex Router 状态目录、密钥文件和常驻服务定义：
+
+```bash
+bash scripts/backup_codex_state.sh --label pre-integration
+```
+
+这一步只读原配置、只往 `codex-router-backups/` 写新目录，可重复执行（快照名带时间戳）。
+范围、排除项和还原方式见 [references/backup-restore.md](references/backup-restore.md)。
 
 ### 1. 准备 Jev 仓库（clone + 打补丁）
 
@@ -202,7 +215,9 @@ provider 模型先 `refresh-catalog` 再重启 Codex Router（路由器在启动
   environment-matrix 列出的位置；
 - 即时开关：`jev-router.off`（跳过 Jev，直接走前沿模型）、
   `jev-router.shadow`（只记录决策不改变路由）；
-- 回滚：禁用 provider、停服务、以及本 skill 各脚本自己产生的备份文件。
+- 回滚：想整体退回装之前的状态，用 `bash scripts/restore_codex_state.sh --snapshot latest`
+  先看计划，再加 `--apply` 执行（要连集成时新建的密钥文件一起清掉就加 `--prune`）；
+  轻量回滚则是禁用 provider、停服务，以及各脚本自己产生的备份文件。
 
 ## 参考文档
 
@@ -215,3 +230,5 @@ provider 模型先 `refresh-catalog` 再重启 Codex Router（路由器在启动
   Node 版本、证书、401、会话过期等。
 - [references/repo-patch.md](references/repo-patch.md)：内置补丁包含哪些仓库改动、
   怎么更新它、怎么确认某个 checkout 已经打好补丁。
+- [references/backup-restore.md](references/backup-restore.md)：改动前快照哪些
+  Codex 配置、怎么整体还原、密钥文件怎么处理。

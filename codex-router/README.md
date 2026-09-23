@@ -44,6 +44,25 @@ cp -R src/jev-codex-router ~/AIProjects/agent-labs/jev-codex-router
 python3 skills/jev-codex-router-setup/scripts/verify_stack.py --live
 ```
 
+## 改动前先快照，随时能还原
+
+集成会改 Codex 的配置，所以 skill 的第 0 步就是留一份基线快照：
+
+```bash
+bash skills/jev-codex-router-setup/scripts/backup_codex_state.sh --label pre-integration
+```
+
+覆盖 `~/.codex/config.toml`、桌面端状态、`~/.codex/codex-router/` 状态目录、
+`~/.jev.env` 与 `~/.hermes/.env`、常驻服务定义。想整体退回：
+
+```bash
+bash skills/jev-codex-router-setup/scripts/restore_codex_state.sh --snapshot latest          # 预览
+bash skills/jev-codex-router-setup/scripts/restore_codex_state.sh --snapshot latest --apply  # 执行
+```
+
+还原前会自动给当前状态再打一份 `pre-restore` 快照，所以这一步本身也能回退。细节见
+`skills/jev-codex-router-setup/references/backup-restore.md`。
+
 ## 已知限制
 
 - 桌面端只在启动时读一次模型目录，新增模型后要**完全退出再打开**才可见；
