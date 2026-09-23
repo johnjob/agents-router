@@ -90,6 +90,20 @@ bash scripts/bootstrap_jev_repo.sh --check
 environment-matrix 里对应平台的官方安装命令自行安装（安装脚本会交互式询问
 provider，属于用户操作）。已安装则跳过。
 
+安装后对 `detect_env.py` 返回的 `paths.codex_router_root` 运行独立的原生协作补丁：
+
+```bash
+bash scripts/apply_native_agent_relay_patches.sh --router <codex_router_root>
+bash scripts/apply_native_agent_relay_patches.sh --router <codex_router_root> --check
+```
+
+脚本先在临时副本顺序演练 `0002`、`0003`，再对目标逐项做幂等检查，
+只在 `git apply --check` 成功时应用，
+不覆盖 checkout 中的其他改动。若报告不兼容，先核对路由器版本和差异，不要强制打补丁。
+若补丁刚应用到已运行的服务，按该 checkout 的 `bin/control service restart`
+重启并检查状态；新安装的服务按后续安装流程启动。密文子任务仍需用真实子 agent
+做最终验证，`verify_stack.py --live` 的普通模型请求不能代替它。
+
 ### 3. 注册 provider 描述（不含密钥）
 
 ```bash
