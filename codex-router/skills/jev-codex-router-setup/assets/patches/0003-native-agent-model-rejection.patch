@@ -1,0 +1,103 @@
+diff --git a/src/router.mjs b/src/router.mjs
+index 39afcaf..6f21de7 100644
+--- a/src/router.mjs
++++ b/src/router.mjs
+@@ -1601,4 +1601,15 @@ function nativeRelayModelUnsupported(bytes, model) {
+     const message = response?.error?.message ?? response?.detail;
+-    return message ===
+-      `The '${model}' model is not supported when using Codex with a ChatGPT account.`;
++    const named = typeof message === "string"
++      ? /^The ['"]([^'"]+)['"] model\b/i.exec(message.trim())
++      : null;
++    if (named && named[1] !== model) return false;
++    if (
++      response?.error?.param === "model" &&
++      ["unsupported_model", "model_not_supported"].includes(response.error.code)
++    ) {
++      return true;
++    }
++    if (typeof message !== "string") return false;
++    const match = /^The ['"]([^'"]+)['"] model (?:is not|isn't) supported (?:when using Codex with a|with the current) ChatGPT account[.!]?$/i.exec(message.trim());
++    return match?.[1] === model;
+   } catch {
+diff --git a/test/routing.test.mjs b/test/routing.test.mjs
+index 892fb72..ea819ae 100644
+--- a/test/routing.test.mjs
++++ b/test/routing.test.mjs
+@@ -1612,5 +1612,5 @@ test("native agent relay retries an account-rejected model and reuses the accept
+     if (body.model === "gpt-6-luna") {
+-      json(response, 400, {
+-        detail: "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.",
+-      });
++      json(response, 400, nativeModels.length === 1
++        ? { detail: "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account!" }
++        : { error: { code: "unsupported_model", param: "model", message: "Model unavailable." } });
+       return;
+@@ -1732,2 +1732,67 @@ test("native agent relay does not retry an unrelated 400 or override the configu
+ 
++test("native agent relay does not retry a rejection naming another model", async () => {
++  const nativeModels = [];
++  const native = await mockServer(async (request, response) => {
++    nativeModels.push((await bodyJson(request)).model);
++    const message = "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.";
++    json(response, 400, nativeModels.length === 1
++      ? { detail: message }
++      : { error: { code: "unsupported_model", param: "model", message } });
++  });
++  let gatewayRequests = 0;
++  const gateway = await mockServer(async (_request, response) => {
++    gatewayRequests += 1;
++    json(response, 200, { route: "external" });
++  });
++  const routerPort = await openPort();
++  const router = run("router.mjs", {
++    CODEX_ROUTER_PORT: String(routerPort),
++    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
++    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
++    CODEX_ROUTER_QUIET: "1",
++  });
++  try {
++    await waitFor(`${routerBase(routerPort)}/models`, router);
++    const response = await fetch(`${routerBase(routerPort)}/responses`, {
++      method: "POST",
++      headers: { Authorization: "Bearer test-session", "Content-Type": "application/json" },
++      body: JSON.stringify({
++        model: "kimi-oauth/k3",
++        input: [{
++          type: "agent_message",
++          content: [
++            { type: "input_text", text: "Message Type: MESSAGE\nPayload:\n" },
++            { type: "encrypted_content", encrypted_content: "gAAAAA-other-model=" },
++          ],
++        }],
++      }),
++    });
++    assert.notEqual(response.status, 200);
++    assert.deepEqual(nativeModels, ["gpt-6-luna"]);
++    assert.equal(gatewayRequests, 0);
++    assert.doesNotMatch(await response.text(), /gAAAAA-other-model/u);
++
++    const structured = await fetch(`${routerBase(routerPort)}/responses`, {
++      method: "POST",
++      headers: { Authorization: "Bearer test-session", "Content-Type": "application/json" },
++      body: JSON.stringify({
++        model: "kimi-oauth/k3",
++        input: [{
++          type: "agent_message",
++          content: [
++            { type: "input_text", text: "Message Type: MESSAGE\nPayload:\n" },
++            { type: "encrypted_content", encrypted_content: "gAAAAA-structured-other=" },
++          ],
++        }],
++      }),
++    });
++    assert.notEqual(structured.status, 200);
++    assert.deepEqual(nativeModels, ["gpt-6-luna", "gpt-6-luna"]);
++    assert.equal(gatewayRequests, 0);
++  } finally {
++    await stopChild(router);
++    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
++  }
++});
++
+ test("router preserves relay 401 so Codex can refresh authentication", async () => {

@@ -33,13 +33,15 @@
 针对独立的 Codex Router 仓库（基线 `9c0db45676238d032757370ec4010b66b6759dd8`），
 不是上面的 Jev 仓库补丁。原生目录列出一个型号，不代表当前 ChatGPT 账号可以调用；
 该补丁为密文子任务转发选用经过原生请求验证的候选，并仅在上游明确拒绝当前型号时
-有限重试。成功型号只在进程内按账号缓存，不保存凭据或任务内容。
+有限重试。`0003-native-agent-model-rejection.patch` 在其基础上识别明确的结构化型号错误
+和同一拒绝文案的标点变化。成功型号只在进程内按账号缓存，不保存凭据或任务内容。
 
-在**干净的 Codex Router checkout** 中应用和验证：
+安装 skill 的第 2 步会按顺序应用两份补丁；单独操作时使用同一脚本：
 
 ```bash
-git apply --check /path/to/agents-router/codex-router/skills/jev-codex-router-setup/assets/patches/0002-native-agent-relay-model.patch
-git apply /path/to/agents-router/codex-router/skills/jev-codex-router-setup/assets/patches/0002-native-agent-relay-model.patch
+bash skills/jev-codex-router-setup/scripts/apply_native_agent_relay_patches.sh --router /path/to/codex-router
+bash skills/jev-codex-router-setup/scripts/apply_native_agent_relay_patches.sh --router /path/to/codex-router --check
+cd /path/to/codex-router
 node --test --test-timeout=600000 test/routing.test.mjs
 npm run check
 ```
